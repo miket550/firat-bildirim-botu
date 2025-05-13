@@ -1,0 +1,113 @@
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+import requests
+from bs4 import BeautifulSoup
+from flask import Flask
+from threading import Thread
+import time
+import json
+import os
+
+TELEGRAM_BOT_TOKEN = '8075438517:AAH2V8mWVH9OY1qcj3QJ6CcwmERviQpGjuA'
+CHAT_ID = '944442637'
+
+DUYURU_SITELERI = {
+    'F.Ü - Ana Sayfa': 'https://www.firat.edu.tr/tr/page/announcement',
+    'F.Ü - İİBF': 'https://iibf.firat.edu.tr/announcements-all',
+    'F.Ü - Mühendislik Fakültesi': 'https://muhendislikf.firat.edu.tr/announcements-all',
+    'F.Ü - Teknoloji Fakültesi': 'https://teknolojif.firat.edu.tr/announcements-all',
+    'F.Ü - Öğrenci İşleri': 'https://ogrencidb.firat.edu.tr/announcements-all',
+    'F.Ü - Öğrenci Dekanlığı': 'https://ogrencidekanligi.firat.edu.tr/announcements-all',
+    'F.Ü - Yaz Okulu': 'https://yazokuluyeni.firat.edu.tr/announcements-all',
+    'F.Ü - Eğitim Fakültesi': 'https://egitimf.firat.edu.tr/tr/announcements-all',
+    'F.Ü - Kütüphane': 'https://kutuphanedb.firat.edu.tr/announcements-all',
+}
+
+KAYIT_DOSYASI = 'eski_duyurular.json'
+
+if os.path.exists(KAYIT_DOSYASI):
+    with open(KAYIT_DOSYASI, 'r') as f:
+        eski_duyurular = json.load(f)
+else:
+    eski_duyurular = {}
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot aktif"
+
+def webserveri_baslat():
+    app.run(host='0.0.0.0', port=8080)
+
+def telegrama_gonder(mesaj, buton_linki=None):
+    url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
+    data = {
+        'chat_id': CHAT_ID,
+        'text': mesaj,
+        'parse_mode': 'HTML'
+    }
+    if buton_linki:
+        data['reply_markup'] = '{"inline_keyboard":[[{"text":"Duyuruya Git", "url":"' + buton_linki + '"}]]}'
+    try:
+        requests.post(url, data=data)
+    except Exception as e:
+        print("Mesaj gönderilemedi:", e)
+
+def duyurulari_kontrol_et():
+    for fakulte_adi, duyuru_url in DUYURU_SITELERI.items():
+        try:
+            response = requests.get(duyuru_url, timeout=10, verify=False)
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            duyurular = soup.select('div.other-news-card.mb-3 a[href*="announcements-detail"]')
+            if not duyurular:
+                print(f"⚠️ Duyuru bulunamadı: {fakulte_adi}")
+                continue
+
+            duyuru = duyurular[0]
+            link = duyuru['href']
+            if not link.startswith('http'):
+                base = duyuru_url.split('/announcements')[0]
+                link = base + link
+
+            if eski_duyurular.get(fakulte_adi) == link:
+                print(f"⏸️ Yeni duyuru yok: {fakulte_adi}")
+                continue
+
+            detay = requests.get(link, verify=False)
+            detay_soup = BeautifulSoup(detay.text, 'html.parser')
+
+            baslik_tag = detay_soup.select_one('div.new-section-detail-title h3')
+            baslik = baslik_tag.get_text(strip=True) if baslik_tag else "Başlık bulunamadı"
+
+            tarih_tag = detay_soup.select_one('div.new-section-detail-date p')
+            if tarih_tag:
+                tarih = ''.join([s.strip() for s in tarih_tag.contents if isinstance(s, str)]).replace('\n', '').replace(' ', '')
+            else:
+                tarih = "Tarih bulunamadı"
+
+            mesaj = f"<b>{fakulte_adi}</b>\n{baslik}\n📅 {tarih}"
+            telegrama_gonder(mesaj, link)
+
+            eski_duyurular[fakulte_adi] = link
+            with open(KAYIT_DOSYASI, 'w') as f:
+                json.dump(eski_duyurular, f)
+
+            print(f"✅ {fakulte_adi} duyurusu gönderildi.")
+
+        except Exception as e:
+            print(f"❗ HATA ({fakulte_adi}):", e)
+
+def donguyu_baslat():
+    while True:
+        duyurulari_kontrol_et()
+        time.sleep(120)
+
+print("🚀 Bot başlatıldı.")
+t = Thread(target=webserveri_baslat)
+t.start()
+
+d = Thread(target=donguyu_baslat)
+d.start()
